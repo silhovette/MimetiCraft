@@ -4,8 +4,8 @@
 
 MimetiCraft samples a construction video, filters redundant frames locally, asks a
 vision model to describe the building as a voxel scene, and compiles it into a
-single ZIP. No task-specific training or local GPU is required. Use **Continue
-with ChatGPT** or an optional OpenAI API key.
+single ZIP. No task-specific training or local GPU is required. Use **Sign in
+with ChatGPT** with saved account sessions, or an optional OpenAI API key.
 
 > This is a reconstruction prototype, not a block-perfect converter. Real-account
 > inference and ZIP generation have been tested locally. In-game behavior and
@@ -14,7 +14,9 @@ with ChatGPT** or an optional OpenAI API key.
 ## Features
 
 - Windows desktop interface built with Tkinter.
-- ChatGPT account authorization, account-specific model discovery and OS credential storage.
+- Optimized ChatGPT account-session persistence, account switching and model discovery using OS credential storage.
+- Streamlined desktop controls with saved-account selection and fewer status-only UI elements.
+- Improved recognition and validated placement for glass, stained glass, water, Light blocks and Barriers.
 - Optional API-key mode; no automatic fallback to separately billed API usage.
 - **500 target frames by default**, adjustable from **2 to 1200**.
 - Local CPU filtering: sample `ceil(target * 1.1)` candidates, then remove the
