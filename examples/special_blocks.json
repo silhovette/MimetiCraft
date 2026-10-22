@@ -1,0 +1,25 @@
+{
+  "name": "Special blocks and sealed water demonstration",
+  "size": [12, 5, 8],
+  "ops": [
+    {"block": "minecraft:water[level=0]", "from": [1, 1, 2], "to": [1, 1, 2]},
+    {"block": "minecraft:light[level=15,waterlogged=true]", "from": [2, 1, 2], "to": [2, 1, 2]},
+    {"block": "minecraft:light_blue_stained_glass_pane[north=true,south=true,east=true,west=false,waterlogged=true]", "from": [3, 1, 2], "to": [3, 1, 2]},
+    {"block": "minecraft:stone", "from": [0, 0, 1], "to": [4, 0, 3]},
+    {"block": "minecraft:glass", "from": [0, 1, 1], "to": [0, 1, 3]},
+    {"block": "minecraft:glass", "from": [4, 1, 1], "to": [4, 1, 3]},
+    {"block": "minecraft:glass", "from": [1, 1, 1], "to": [3, 1, 1]},
+    {"block": "minecraft:glass", "from": [1, 1, 3], "to": [3, 1, 3]},
+    {"block": "minecraft:light[level=0]", "from": [6, 1, 1], "to": [6, 1, 1]},
+    {"block": "minecraft:light[level=8]", "from": [7, 1, 1], "to": [7, 1, 1]},
+    {"block": "minecraft:light[level=15]", "from": [8, 1, 1], "to": [8, 1, 1]},
+    {"block": "minecraft:barrier", "from": [10, 1, 1], "to": [10, 1, 1]},
+    {"action": "place", "block": "minecraft:structure_void", "from": [10, 1, 3], "to": [10, 1, 3]},
+    {"action": "clear", "block": "minecraft:air", "from": [10, 1, 5], "to": [10, 1, 5]},
+    {"block": "minecraft:glass_pane", "from": [5, 1, 1], "to": [5, 1, 2]},
+    {"block": "minecraft:light_blue_stained_glass", "from": [5, 1, 3], "to": [5, 1, 3]},
+    {"block": "minecraft:stone", "from": [5, 0, 4], "to": [8, 0, 6]},
+    {"action": "preserve", "block": "minecraft:structure_void", "from": [6, 0, 5], "to": [6, 0, 5]},
+    {"action": "unknown", "confidence": "uncertain", "block": null, "from": [7, 1, 5], "to": [7, 1, 5]}
+  ]
+}

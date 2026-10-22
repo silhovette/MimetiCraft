@@ -18,8 +18,8 @@ class App(tk.Tk):
     def __init__(self):
         super().__init__()
         self.title('MimetiCraft v0.3.1 — Java 26.3')
-        self.geometry('780x660')
-        self.minsize(740, 630)
+        self.geometry('780x560')
+        self.minsize(740, 530)
         self.auth = ChatGPTAuth()
         self.video = tk.StringVar()
         self.output = tk.StringVar(value=str(Path.home() / 'Downloads' / 'video_build.zip'))
@@ -29,9 +29,12 @@ class App(tk.Tk):
         self.model = tk.StringVar(value='')
         self.model_mapping = {}
         self.frames = tk.IntVar(value=DEFAULT_FRAMES)
+        self.building_hints = tk.StringVar(value='')
         selected = self.auth.selected()
-        self.account = tk.StringVar(value=f'Saved registration: {selected.email} (refresh models to verify)' if selected else 'Not signed in')
-        self.status = tk.StringVar(value='Sign in with ChatGPT, select a video, then generate a Data Pack ZIP.')
+        self.account = tk.StringVar(value=selected.email if selected else 'None — sign in below')
+        self.account_choice = tk.StringVar()
+        self.account_ids = {}
+        self.status = tk.StringVar(value='Choose the current ChatGPT account, select a video, then generate a Data Pack ZIP.')
         frame = ttk.Frame(self, padding=18)
         frame.pack(fill='both', expand=True)
         frame.columnconfigure(1, weight=1)
@@ -46,15 +49,18 @@ class App(tk.Tk):
 
         self.login_frame = ttk.LabelFrame(frame, text='ChatGPT connection', padding=9)
         self.login_frame.grid(row=1, column=0, columnspan=3, sticky='ew', pady=(8, 5))
-        self.login_frame.columnconfigure(0, weight=1)
-        ttk.Label(self.login_frame, textvariable=self.account).grid(row=0, column=0, columnspan=3, sticky='w')
-        self.login_btn = ttk.Button(self.login_frame, text='Continue with ChatGPT', command=self.sign_in)
+        self.login_frame.columnconfigure(1, weight=1)
+        ttk.Label(self.login_frame, text='Saved accounts').grid(row=0, column=0, sticky='w')
+        self.account_box = ttk.Combobox(self.login_frame, textvariable=self.account_choice,
+                                        state='readonly', width=42)
+        self.account_box.grid(row=0, column=1, columnspan=2, sticky='ew', padx=8)
+        self.account_box.bind('<<ComboboxSelected>>', lambda _event: self.switch_account())
+        self.login_btn = ttk.Button(self.login_frame, text='Sign in with ChatGPT', command=self.sign_in)
         self.login_btn.grid(row=1, column=0, sticky='w', pady=7)
-        self.models_btn = ttk.Button(self.login_frame, text='Refresh models', command=self.refresh_models)
+        self.models_btn = ttk.Button(self.login_frame, text='Refresh current account models', command=self.refresh_models)
         self.models_btn.grid(row=1, column=1, sticky='w', padx=8)
-        self.new_account_btn = ttk.Button(self.login_frame, text='Use another account', command=lambda: self.sign_in(add=True))
+        self.new_account_btn = ttk.Button(self.login_frame, text='Add account', command=lambda: self.sign_in(add=True))
         self.new_account_btn.grid(row=1, column=2, sticky='w', padx=8)
-        ttk.Label(self.login_frame, text='AI requests count toward the authorized ChatGPT allowance; availability depends on your account.').grid(row=2, column=0, columnspan=3, sticky='w')
 
         self.api_frame = ttk.LabelFrame(frame, text='Optional API key', padding=9)
         self.api_frame.columnconfigure(1, weight=1)
@@ -62,12 +68,10 @@ class App(tk.Tk):
         ttk.Entry(self.api_frame, textvariable=self.api_key, show='*').grid(row=0, column=1, sticky='ew', padx=8)
         ttk.Label(self.api_frame, text='Model').grid(row=1, column=0, sticky='w', pady=4)
         ttk.Entry(self.api_frame, textvariable=self.api_model).grid(row=1, column=1, sticky='ew', padx=8)
-        ttk.Label(self.api_frame, text='This mode uses separately billed API credits. The key is not saved by this app.').grid(row=2, column=0, columnspan=2, sticky='w')
 
         ttk.Label(frame, text='Model').grid(row=2, column=0, sticky='w', pady=9)
         self.model_box = ttk.Combobox(frame, textvariable=self.model, state='readonly', width=47)
-        self.model_box.grid(row=2, column=1, sticky='ew', padx=9)
-        ttk.Label(frame, text='Click Refresh models after sign-in').grid(row=2, column=2, sticky='w')
+        self.model_box.grid(row=2, column=1, columnspan=2, sticky='ew', padx=9)
 
         ttk.Label(frame, text='Building video').grid(row=3, column=0, sticky='w', pady=9)
         ttk.Entry(frame, textvariable=self.video).grid(row=3, column=1, sticky='ew', padx=9)
@@ -83,18 +87,69 @@ class App(tk.Tk):
 
         self.generate_btn = ttk.Button(frame, text='Generate Minecraft Data Pack ZIP', command=self.generate)
         self.generate_btn.grid(row=6, column=1, pady=(15, 8))
-        ttk.Label(frame, textvariable=self.status, wraplength=740).grid(row=7, column=0, columnspan=3, sticky='w', pady=(5, 5))
         self.command_panel = self._command_panel(frame)
-        self.command_panel.grid(row=8, column=0, columnspan=3, sticky='ew', pady=6)
-        ttk.Button(frame, text='Plan usage / limits', command=lambda: webbrowser.open('https://chatgpt.com/#settings/Usage')).grid(row=9, column=0, columnspan=3, sticky='w')
+        self.command_panel.grid(row=7, column=0, columnspan=3, sticky='ew', pady=6)
+        ttk.Button(frame, text='Plan usage / limits', command=lambda: webbrowser.open('https://chatgpt.com/#settings/Usage')).grid(row=8, column=0, columnspan=3, sticky='w')
+        self._refresh_account_choices()
         self._provider_changed()
+
+    def _refresh_account_choices(self):
+        """Show every locally saved registration without exposing credentials."""
+        self.account_ids = {}
+        labels = []
+        for account in self.auth.accounts():
+            label = account.email or 'ChatGPT account'
+            # Keep duplicate emails selectable if an account provider returns one.
+            if label in self.account_ids:
+                label = f'{label} ({account.subject[:8]})'
+            self.account_ids[label] = account.client_id
+            labels.append(label)
+        self.account_box['values'] = labels
+        selected = self.auth.selected()
+        selected_label = next((label for label, client_id in self.account_ids.items()
+                               if client_id == (selected.client_id if selected else None)), '')
+        self.account_choice.set(selected_label)
+        self.login_btn.configure(text=('Reauthorize current account' if selected
+                                       else 'Sign in with ChatGPT'))
+
+    def switch_account(self):
+        """Activate a saved account and load its models without opening a browser."""
+        client_id = self.account_ids.get(self.account_choice.get())
+        if not client_id:
+            self.status.set('No saved ChatGPT account is available. Use another account to sign in.')
+            return
+        self.auth.select(client_id)
+        account = self.auth.selected()
+        self.account.set(account.email if account else 'None — sign in below')
+        self._task('Switched account; fetching models for ' + (account.email if account else 'the selected account') + '…',
+                   self.auth.models,
+                   self._models_ready)
+
+    def edit_building_hints(self):
+        dialog = tk.Toplevel(self)
+        dialog.title('Building hints')
+        dialog.transient(self)
+        content = ttk.Frame(dialog, padding=16)
+        content.pack(fill='both', expand=True)
+        ttk.Label(content, text='Optional instructions. Hints are recorded separately from video evidence.', wraplength=500).pack(anchor='w')
+        text = tk.Text(content, width=66, height=8, wrap='word')
+        text.insert('1.0', self.building_hints.get())
+        text.pack(fill='both', expand=True, pady=8)
+        def save():
+            value = text.get('1.0', 'end-1c')
+            if len(value) > 8192:
+                messagebox.showerror('Building hints', 'Use at most 8192 characters.', parent=dialog)
+                return
+            self.building_hints.set(value)
+            dialog.destroy()
+        ttk.Button(content, text='Save', command=save).pack(anchor='e')
 
     def _copy_text(self, text):
         self.clipboard_clear()
         self.clipboard_append(text)
 
     def _command_panel(self, parent):
-        panel = ttk.LabelFrame(parent, text='In-game commands (select text and Ctrl+C, or click Copy)', padding=8)
+        panel = ttk.LabelFrame(parent, text='In-game commands', padding=8)
         panel.columnconfigure(0, weight=1)
         for row, command in enumerate(GAME_COMMANDS):
             entry = ttk.Entry(panel)
@@ -129,6 +184,7 @@ class App(tk.Tk):
         self.login_btn.configure(state='disabled')
         self.models_btn.configure(state='disabled')
         self.new_account_btn.configure(state='disabled')
+        self.account_box.configure(state='disabled')
         self.status.set(text)
 
         def runner():
@@ -145,6 +201,7 @@ class App(tk.Tk):
     def _ready(self):
         for btn in (self.generate_btn, self.login_btn, self.models_btn, self.new_account_btn):
             btn.configure(state='normal')
+        self.account_box.configure(state='readonly')
 
     def _error(self, msg):
         self._ready()
@@ -170,7 +227,8 @@ class App(tk.Tk):
 
     def _signed_in(self, data):
         account, models = data
-        self.account.set('Connected: ' + account.email)
+        self.account.set(account.email)
+        self._refresh_account_choices()
         self._load_models(models)
         self._ready()
         self.status.set('ChatGPT connected and available models loaded. Select a video to begin.')
@@ -182,7 +240,7 @@ class App(tk.Tk):
     def _models_ready(self, models):
         self._load_models(models)
         account = self.auth.selected()
-        self.account.set('Connected: ' + account.email if account else 'Not signed in')
+        self.account.set(account.email if account else 'None — sign in below')
         self._ready()
         self.status.set(f'Found {len(models)} available ChatGPT models.')
 
@@ -216,6 +274,7 @@ class App(tk.Tk):
             return
         params = {'video': self.video.get(), 'out': self.output.get(), 'frames': frames,
                   'auth_mode': mode,
+                  'building_hints': self.building_hints.get(),
                   'model': self.model_mapping[self.model.get()] if mode == 'chatgpt' else self.api_model.get()}
         if mode == 'api':
             params['api_key'] = self.api_key.get()
@@ -226,7 +285,9 @@ class App(tk.Tk):
 
     def _generated(self, summary):
         self._ready()
-        self.status.set(f"Created {summary['zip']} · {summary['commands']} block commands")
+        skipped = summary.get('skipped_regions', 0)
+        note = f' | {skipped} unknown/preserved region(s) left untouched' if skipped else ''
+        self.status.set(f"Created {summary['zip']} · {summary['commands']} block commands{note}")
         dialog = tk.Toplevel(self)
         dialog.title('Data Pack ZIP ready')
         dialog.transient(self)
@@ -240,7 +301,10 @@ class App(tk.Tk):
         path.grid(row=1, column=0, sticky='ew')
         ttk.Button(content, text='Copy path', command=lambda: self._copy_text(summary['zip'])).grid(row=1, column=1, padx=(8, 0))
         self._command_panel(content).grid(row=2, column=0, columnspan=2, sticky='ew', pady=12)
-        ttk.Label(content, text='Undo removes generated blocks, not the previous terrain. Back up your world.', wraplength=520).grid(row=3, column=0, columnspan=2, sticky='w')
+        info = 'Undo removes generated blocks, not the previous terrain. Back up your world.'
+        if skipped:
+            info = f'{skipped} unknown/preserved region(s) were left untouched. Review the result or provide Building hints.\n\n' + info
+        ttk.Label(content, text=info, wraplength=520).grid(row=3, column=0, columnspan=2, sticky='w')
         ttk.Button(content, text='Close', command=dialog.destroy).grid(row=4, column=0, columnspan=2, pady=(12, 0))
 
 

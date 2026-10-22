@@ -18,6 +18,9 @@ import time
 import zipfile
 from typing import Any, Callable
 
+from block_rules import (BLOCK_KNOWLEDGE, SPECIAL_PALETTE, build_phase, full_seal,
+                         has_water, prepare_plan, state_rules, water_boundaries)
+
 PACK_VERSION = [121, 0]  # Java 26.3
 NAMESPACE = "vidbuild"
 MAX_VOLUME = 200_000
@@ -51,23 +54,9 @@ PALETTE = [
     "lantern", "sea_lantern", "glowstone", "end_rod", "grass_block", "dirt",
     "coarse_dirt", "gravel", "sand", "water", "bookshelf", "barrel", "crafting_table",
 ]
+PALETTE = list(dict.fromkeys(PALETTE + SPECIAL_PALETTE))
 PALETTE_SET = {"minecraft:" + name for name in PALETTE}
 BLOCK_RE = re.compile(r"^minecraft:([a-z0-9_]+)(?:\[([a-z0-9_=,]+)\])?$")
-STATES_ALLOWED = {
-    "facing": {"north", "south", "east", "west", "up", "down"},
-    "half": {"top", "bottom", "upper", "lower"},
-    "type": {"top", "bottom", "double"},
-    "axis": {"x", "y", "z"},
-    "open": {"true", "false"},
-    "hinge": {"left", "right"},
-    "powered": {"true", "false"},
-    "waterlogged": {"true", "false"},
-    "shape": {"straight", "inner_left", "inner_right", "outer_left", "outer_right"},
-    "rotation": {str(i) for i in range(16)},
-    "lit": {"true", "false"},
-    "hanging": {"true", "false"},
-}
-
 SCENE_SCHEMA = {
     "type": "object", "additionalProperties": False,
     "required": ["name", "size", "ops"],
@@ -76,15 +65,39 @@ SCENE_SCHEMA = {
         "size": {"type": "array", "items": {"type": "integer"}},
         "ops": {"type": "array", "items": {
             "type": "object", "additionalProperties": False,
-            "required": ["block", "from", "to"],
+            "required": ["action", "confidence", "evidence", "replace", "block", "from", "to"],
             "properties": {
-                "block": {"type": "string"},
+                "action": {"type": "string", "enum": ["place", "clear", "preserve", "unknown"]},
+                "confidence": {"type": "string", "enum": ["confirmed", "uncertain"]},
+                "evidence": {"type": "object", "additionalProperties": False,
+                             "required": ["frames", "observation", "hint"], "properties": {
+                                 "frames": {"type": "array", "items": {"type": "integer"}},
+                                 "observation": {"type": "string"},
+                                 "hint": {"type": ["string", "null"]}}},
+                "replace": {"type": "boolean"},
+                "block": {"type": ["string", "null"]},
                 "from": {"type": "array", "items": {"type": "integer"}},
                 "to": {"type": "array", "items": {"type": "integer"}},
             },
         }},
     },
 }
+
+# A nullable block is meaningful only for non-placement operations. Keep that
+# relationship in the model schema rather than relying on prompt compliance.
+_OP_SCHEMA = SCENE_SCHEMA['properties']['ops']['items']
+SCENE_SCHEMA['properties']['ops']['items'] = {'anyOf': [
+    {**_OP_SCHEMA, 'properties': {**_OP_SCHEMA['properties'],
+        'action': {'type': 'string', 'enum': [action]},
+        'confidence': {'type': 'string', 'enum': confidence},
+        'block': block}}
+    for action, confidence, block in (
+        ('place', ['confirmed'], {'type': 'string'}),
+        ('clear', ['confirmed'], {'type': 'string', 'enum': ['minecraft:air']}),
+        ('preserve', ['confirmed', 'uncertain'], {'type': 'null'}),
+        ('unknown', ['uncertain'], {'type': 'null'}),
+    )
+]}
 
 
 def check_block(block: str) -> str:
@@ -97,24 +110,14 @@ def check_block(block: str) -> str:
     if states_raw:
         pairs = states_raw.split(",")
         seen = set()
+        rules = state_rules(m.group(1))
         for pair in pairs:
             if pair.count("=") != 1:
                 raise ValueError(f"Malformed block state: {block}")
             key, value = pair.split("=")
-            if key in seen or key not in STATES_ALLOWED or value not in STATES_ALLOWED[key]:
+            if key in seen or key not in rules or value not in rules[key]:
                 raise ValueError(f"Unsupported block state: {block}")
             seen.add(key)
-        name = m.group(1)
-        if "facing" in seen and not any(s in name for s in ["stairs", "door", "trapdoor", "end_rod"]):
-            raise ValueError(f"Facing does not apply to {name}")
-        if "type" in seen and not name.endswith("_slab"):
-            raise ValueError(f"Slab type does not apply to {name}")
-        if "shape" in seen and not name.endswith("_stairs"):
-            raise ValueError(f"Stairs shape does not apply to {name}")
-        if "half" in seen and not any(s in name for s in ["stairs", "door", "trapdoor"]):
-            raise ValueError(f"Half does not apply to {name}")
-        if "axis" in seen and not (name.endswith("_log") or name.endswith("_wood")):
-            raise ValueError(f"Axis does not apply to {name}")
     return block
 
 
@@ -139,14 +142,48 @@ def validate_scene(scene: Any) -> dict[str, Any]:
     for i, op in enumerate(ops):
         if not isinstance(op, dict):
             raise ValueError(f"Operation {i} isn't a JSON object")
-        block = check_block(op.get("block"))
+        if 'block' not in op:
+            raise ValueError(f'ops[{i}].block is missing; provide a block ID or explicit null for an unknown region')
+        # Old offline scenes use an explicit block as the placement/clear request.
+        # New model scenes have separate intent and confidence fields.
+        action = op.get('action', 'clear' if op.get('block') == 'minecraft:air' else 'place')
+        confidence = op.get('confidence', 'uncertain' if action == 'unknown' else 'confirmed')
+        replace = op.get('replace', False)
+        if action not in ('place', 'clear', 'preserve', 'unknown'):
+            raise ValueError(f'Invalid action in operation {i}')
+        if confidence not in ('confirmed', 'uncertain') or type(replace) is not bool:
+            raise ValueError(f'Invalid confidence/replace in operation {i}')
+        if op['block'] is None and action in ('place', 'clear'):
+            # Safely recover an older/non-conforming model response. Missing a
+            # block name is uncertainty, never permission to clear with air.
+            action, confidence, replace = 'unknown', 'uncertain', False
+        if action in ('preserve', 'unknown') or confidence == 'uncertain':
+            block = op.get('block')
+            if block is not None and not isinstance(block, str):
+                raise ValueError(f'Invalid proposed block in operation {i}')
+        else:
+            try:
+                block = check_block(op['block'])
+            except ValueError as exc:
+                kind = type(op['block']).__name__
+                raise ValueError(f'ops[{i}].block ({kind}): {exc}') from None
+            if (action == 'clear') != (block == 'minecraft:air'):
+                raise ValueError('Air requires an explicit clear action; clear may only place minecraft:air')
         a = parse_point(op.get("from"), f"ops[{i}].from")
         b = parse_point(op.get("to"), f"ops[{i}].to")
         if any(a[j] > b[j] or a[j] < 0 or b[j] >= dims[j] for j in range(3)):
             raise ValueError(f"Invalid bounds in operation {i}: {a}..{b} within {dims}")
         if block == "minecraft:air" and (b[0] - a[0] + 1)*(b[1] - a[1] + 1)*(b[2] - a[2] + 1) > 1000:
             raise ValueError(f"Air clearing too large in operation {i}; prevents terrain damage")
-        validated.append({"block": block, "from": list(a), "to": list(b)})
+        evidence = op.get('evidence')
+        if evidence is not None and (not isinstance(evidence, dict) or
+                not isinstance(evidence.get('frames'), list) or
+                any(type(frame) is not int or frame < 0 for frame in evidence['frames']) or
+                not isinstance(evidence.get('observation'), str) or
+                evidence.get('hint') is not None and not isinstance(evidence.get('hint'), str)):
+            raise ValueError(f'Invalid evidence in operation {i}')
+        validated.append({"action": action, "confidence": confidence, "replace": replace,
+                          "evidence": evidence, "block": block, "from": list(a), "to": list(b)})
     return {"name": str(scene.get("name") or "video_build")[:80], "size": list(dims), "ops": validated}
 
 
@@ -170,28 +207,31 @@ def split_fill(a: tuple[int, ...], b: tuple[int, ...]):
     yield from split_fill(tuple(right_a), b)
 
 
-def make_commands(scene: dict[str, Any]) -> list[str]:
+def make_commands(scene: dict[str, Any], *, plan=None) -> list[str]:
+    plan = prepare_plan(validate_scene(scene)['ops'], MAX_COMMANDS) if plan is None else plan
     lines = []
-    for op in scene["ops"]:
+    for op in sorted(plan, key=build_phase):
         block = op["block"]
         for a, b in split_fill(tuple(op["from"]), tuple(op["to"])):
             if a == b:
-                lines.append(f"setblock ~{a[0]} ~{a[1]} ~{a[2]} {block}")
+                lines.append(f"setblock ~{a[0]} ~{a[1]} ~{a[2]} {block} strict")
             else:
-                lines.append(f"fill ~{a[0]} ~{a[1]} ~{a[2]} ~{b[0]} ~{b[1]} ~{b[2]} {block}")
+                lines.append(f"fill ~{a[0]} ~{a[1]} ~{a[2]} ~{b[0]} ~{b[1]} ~{b[2]} {block} strict")
     if len(lines) > MAX_COMMANDS:
         raise ValueError("Too many commands for first MVP")
     return lines
 
 
-def make_undo_commands(scene: dict[str, Any]) -> list[str]:
+def make_undo_commands(scene: dict[str, Any], *, plan=None) -> list[str]:
     """Remove placed block types inside each operation's footprint.
 
     This is a destructive *removal*, not a world snapshot. It cannot restore
     terrain/blocks that were overwritten by the build.
     """
+    plan = prepare_plan(validate_scene(scene)['ops'], MAX_COMMANDS) if plan is None else plan
     commands = []
-    for op in reversed(scene["ops"]):
+    # Remove sources/waterlogged hosts before opening their container walls.
+    for op in sorted(reversed(plan), key=lambda item: not has_water(item['block'])):
         block = op["block"]
         if block == "minecraft:air":
             continue
@@ -201,12 +241,12 @@ def make_undo_commands(scene: dict[str, Any]) -> list[str]:
             if a == b:
                 commands.append(
                     f"execute if block ~{a[0]} ~{a[1]} ~{a[2]} {block_id} "
-                    f"run setblock ~{a[0]} ~{a[1]} ~{a[2]} minecraft:air"
+                    f"run setblock ~{a[0]} ~{a[1]} ~{a[2]} minecraft:air strict"
                 )
             else:
                 commands.append(
                     f"fill ~{a[0]} ~{a[1]} ~{a[2]} ~{b[0]} ~{b[1]} ~{b[2]} "
-                    f"minecraft:air replace {block_id}"
+                    f"minecraft:air replace {block_id} strict"
                 )
     if len(commands) > MAX_COMMANDS:
         raise ValueError("Too many undo commands for this MVP")
@@ -215,8 +255,14 @@ def make_undo_commands(scene: dict[str, Any]) -> list[str]:
 
 def compile_datapack(scene: dict[str, Any], output: Path, offset: tuple[int, int, int] = (5, 0, 5)) -> dict[str, Any]:
     scene = validate_scene(scene)
-    forward = make_commands(scene)
-    reverse = make_undo_commands(scene)
+    plan = prepare_plan(scene['ops'], MAX_COMMANDS)
+    forward = make_commands(scene, plan=plan)
+    reverse = make_undo_commands(scene, plan=plan)
+    if not forward:
+        raise ValueError('No confirmed placements remain; unknown/preserved space is not built')
+    boundaries = water_boundaries(plan)
+    if len(forward) + len(boundaries) * 2 > MAX_COMMANDS:
+        raise ValueError('Water boundary checks exceed the command budget; simplify the scene')
     output.parent.mkdir(parents=True, exist_ok=True)
     pack = {"pack": {"description": f"MimetiCraft build/undo: {scene['name']}",
                      "min_format": PACK_VERSION, "max_format": PACK_VERSION}}
@@ -233,6 +279,9 @@ def compile_datapack(scene: dict[str, Any], output: Path, offset: tuple[int, int
         'execute unless data storage vidbuild:history last if dimension minecraft:the_end run function vidbuild:internal/start\n'
         'execute unless dimension minecraft:overworld unless dimension minecraft:the_nether unless dimension minecraft:the_end run tellraw @s {"text":"Only the three vanilla dimensions are supported by tracked undo.","color":"red"}\n'
     )
+    for op in scene['ops']:
+        if op['action'] in ('preserve', 'unknown') or op['confidence'] == 'uncertain':
+            build = f"# Keep world unchanged: {op['action']} {op['from']}..{op['to']}\n" + build
     start = (
         f"# Align position to block corner; origin offset = {offset}.\n"
         f"execute align xyz positioned ~{offset[0]} ~{offset[1]} ~{offset[2]} "
@@ -240,7 +289,7 @@ def compile_datapack(scene: dict[str, Any], output: Path, offset: tuple[int, int
     )
     # /execute summon sets @s to the transient marker; access its exact Pos
     # with /data modify ... set from entity, avoiding integer rounding bugs.
-    build_at_origin = (
+    commit_build = (
         'data modify storage vidbuild:history last set value {dimension:"minecraft:overworld",x:0.0d,y:0.0d,z:0.0d}\n'
         'execute if dimension minecraft:the_nether run data modify storage vidbuild:history last.dimension set value "minecraft:the_nether"\n'
         'execute if dimension minecraft:the_end run data modify storage vidbuild:history last.dimension set value "minecraft:the_end"\n'
@@ -248,8 +297,22 @@ def compile_datapack(scene: dict[str, Any], output: Path, offset: tuple[int, int
         'data modify storage vidbuild:history last.y set from entity @s Pos[1]\n'
         'data modify storage vidbuild:history last.z set from entity @s Pos[2]\n'
         'function vidbuild:parts/all\n'
-        'kill @s\n'
     )
+    build_at_origin = commit_build + 'kill @s\n'
+    water_checks = []
+    if boundaries:
+        for point in boundaries:
+            pos = ' '.join(f'~{v}' for v in point)
+            water_checks.append(f'execute unless loaded {pos} run data modify storage vidbuild:history water_check.ok set value 0b')
+            water_checks.append(f'execute if loaded {pos} unless block {pos} #vidbuild:fluid_seals run data modify storage vidbuild:history water_check.ok set value 0b')
+        build_at_origin = (
+            'data modify storage vidbuild:history water_check set value {ok:1b}\n'
+            'function vidbuild:internal/check_water\n'
+            'execute if data storage vidbuild:history water_check{ok:1b} run function vidbuild:internal/commit_build\n'
+            'execute unless data storage vidbuild:history water_check{ok:1b} run tellraw @a[distance=..64] {"text":"Build stopped: water needs loaded, sealed bottom/sides. No blocks were placed.","color":"red"}\n'
+            'data remove storage vidbuild:history water_check\n'
+            'kill @s\n'
+        )
     # Test for missing state before a successful undo removes that state.
     undo = (
         'execute unless data storage vidbuild:history last run tellraw @s {"text":"Nothing to undo; use /function vidbuild:build first.","color":"yellow"}\n'
@@ -289,6 +352,13 @@ def compile_datapack(scene: dict[str, Any], output: Path, offset: tuple[int, int
                    'tellraw @s {"text":"MimetiCraft 26.3 ready: /function vidbuild:build and /function vidbuild:undo","color":"green"}\n')
         z.writestr(f"{base}/internal/start.mcfunction", start)
         z.writestr(f"{base}/internal/build_at_origin.mcfunction", build_at_origin)
+        if boundaries:
+            z.writestr(f'{base}/internal/commit_build.mcfunction', commit_build)
+            z.writestr(f'{base}/internal/check_water.mcfunction', '\n'.join(water_checks) + '\n')
+            seals = sorted(block for block in PALETTE_SET if full_seal(block))
+            seals += ['minecraft:bedrock', 'minecraft:obsidian', 'minecraft:crying_obsidian',
+                      'minecraft:netherrack', 'minecraft:end_stone']
+            z.writestr('data/vidbuild/tags/block/fluid_seals.json', json.dumps({'values': seals}))
         z.writestr(f"{base}/internal/undo_from_saved_origin.mcfunction", undo_macro)
         z.writestr(f"{base}/internal/undo_at_origin.mcfunction", undo_at_origin)
         z.writestr(f"{base}/internal/commit_undo.mcfunction", commit_undo)
@@ -303,7 +373,9 @@ def compile_datapack(scene: dict[str, Any], output: Path, offset: tuple[int, int
     return {"zip": str(output), "scene": scene["name"], "size": scene["size"],
             "operations": len(scene["ops"]), "commands": len(forward),
             "undo_commands": len(reverse), "parts": len(build_chunks),
-            "offset": list(offset), "undo_function": f"{NAMESPACE}:undo"}
+            "offset": list(offset), "undo_function": f"{NAMESPACE}:undo",
+            "skipped_regions": sum(op['action'] in ('unknown', 'preserve') or
+                                   op['confidence'] == 'uncertain' for op in scene['ops'])}
 
 def _sample_frame_ids(length: int, count: int) -> list[int]:
     """Distinct chronological samples, biased slightly toward later construction."""
@@ -547,7 +619,10 @@ def _request_scene_text(client, request: dict, model: str, frame_count: int,
 
 def infer_scene(video: Path, model: str, frame_count: int, api_key: str | None = None,
                 auth_mode: str = "chatgpt", access_token: str | None = None,
-                progress: Callable[[str], None] | None = None) -> dict[str, Any]:
+                progress: Callable[[str], None] | None = None,
+                building_hints: str = '') -> dict[str, Any]:
+    if not isinstance(building_hints, str) or len(building_hints) > 8192:
+        raise ValueError('Building hints must be text up to 8192 characters')
     try:
         from openai import OpenAI
     except ImportError as exc:
@@ -563,20 +638,26 @@ def infer_scene(video: Path, model: str, frame_count: int, api_key: str | None =
     palette_text = ", ".join("minecraft:" + b for b in PALETTE if b != "air")
     prompt = f"""You are reconstructing a Minecraft building from ordered frames of its CONSTRUCTION VIDEO.
 Your job: output a single JSON scene specifying approximate Minecraft blocks and grid coordinates.
-This is a first MVP, so prefer a conservative, physically coherent small building instead of inventing hidden intricate details.
+Prefer evidence-backed, physically coherent structure instead of inventing hidden details.
 Frames arrive in chronological order. Interpret construction order to recover walls/floors/roof/doors/windows.
 Coordinate system: x increases left-to-right when facing building front; y is vertical with lowest foundation at 0; z runs front-to-back, starting at 0.
 All positions must be NONNEGATIVE integers strictly within scene size, max size 64 x 48 x 64. Whole build must fit inside size.
 Represent contiguous blocks as inclusive cuboids {{'from':[x,y,z],'to':[x,y,z]}}. Use 1x1x1 ops for decorative details.
-Ops execute IN ORDER, later ops replace earlier ones. A hollow house should be modeled with separate walls, not a solid volume.
+Ops describe a deliberate final plan. Later special-block replacements require replace=true.
+A hollow house should be modeled with separate walls, not a solid volume.
 Prioritize accuracy of silhouette, footprint, wall height, roof and visible surface materials. Avoid filling unrelated terrain with air.
 Do NOT claim to know hidden details. For stairs: use state string e.g. minecraft:stone_brick_stairs[facing=north,half=bottom].
 For slabs: e.g. minecraft:stone_brick_slab[type=bottom].
 Only use block names from this allowed set (state suffix permitted on appropriate blocks): {palette_text}.
-If you cannot reliably see a structure, make a simple coherent approximation. Return 20-250 ops where useful; never return empty.
-Use JSON with top-level keys name, size, ops, each op block/from/to.
+Return 20-250 ops where useful, at most 500. For invisible/unseen/uncertain regions,
+record an unknown operation instead of inventing a placement or clearing air.
+Use JSON with name, size, ops. Each op has action, confidence, evidence, replace,
+block, from, to as specified in the schema.
+{BLOCK_KNOWLEDGE}
 """
     content = [{"type": "input_text", "text": prompt}]
+    if building_hints.strip():
+        content.append({'type': 'input_text', 'text': 'USER BUILDING HINTS (record separately from video evidence):\n' + building_hints})
     for index, (frame_id, jpg) in enumerate(frames):
         content.append({"type":"input_text", "text": f"Chronological frame {index+1} of {len(frames)} (video frame #{frame_id})"})
         content.append({"type":"input_image", "image_url":"data:image/jpeg;base64," + base64.b64encode(jpg).decode("ascii"), "detail":"high"})
@@ -600,7 +681,27 @@ Use JSON with top-level keys name, size, ops, each op block/from/to.
     if not output_text:
         raise RuntimeError("Model did not return a JSON scene; try fewer frames or another model")
     try:
-        return validate_scene(json.loads(output_text))
+        raw_scene = json.loads(output_text)
+        scene = validate_scene(raw_scene)
+        available = {frame_id for frame_id, _ in frames}
+        for raw_op, op in zip(raw_scene['ops'], scene['ops']):
+            if not {'action', 'confidence', 'evidence', 'replace'} <= raw_op.keys():
+                raise ValueError('Model scene requires explicit action, confidence, evidence and replace fields')
+            evidence = op['evidence']
+            if evidence is None:
+                raise ValueError('Model scene requires explicit evidence and uncertainty metadata')
+            if not set(evidence['frames']) <= available:
+                raise ValueError('Model evidence references a frame that was not supplied')
+            if evidence['hint'] and (not building_hints.strip() or evidence['hint'] not in building_hints):
+                raise ValueError('Model claims a building hint that was not supplied')
+            if op['confidence'] == 'confirmed' and op['action'] in ('place', 'clear'):
+                if not evidence['observation'].strip() or not (evidence['frames'] or evidence['hint']):
+                    raise ValueError('Confirmed model placement requires frame evidence or an explicit supplied hint')
+        unresolved = sum(op.get('block') is None and op.get('action') in ('place', 'clear')
+                         for op in raw_scene['ops'])
+        if unresolved:
+            _report_progress(progress, f'Model returned {unresolved} unnamed block region(s); leaving those regions untouched, never replacing them with air.')
+        return scene
     except json.JSONDecodeError as exc:
         raise RuntimeError("Model returned malformed JSON; try a different model or fewer frames") from exc
 
@@ -610,7 +711,8 @@ def run(*, video: str | None = None, scene_path: str | None = None, out: str = "
         model: str | None = None, frames: int = DEFAULT_FRAMES, api_key: str | None = None,
         auth_mode: str = "chatgpt", access_token: str | None = None,
         offset: tuple[int, int, int] = (5, 0, 5),
-        progress: Callable[[str], None] | None = None) -> dict[str, Any]:
+        progress: Callable[[str], None] | None = None,
+        building_hints: str = '') -> dict[str, Any]:
     if (video is None) == (scene_path is None):
         raise ValueError("Choose exactly one: video or scene_path")
     if not 2 <= frames <= MAX_FRAMES:
@@ -619,7 +721,8 @@ def run(*, video: str | None = None, scene_path: str | None = None, out: str = "
         scene = validate_scene(json.loads(Path(scene_path).read_text(encoding="utf8")))
     else:
         scene = infer_scene(Path(video), model or "gpt-5.5", frames, api_key,
-                            auth_mode=auth_mode, access_token=access_token, progress=progress)
+                            auth_mode=auth_mode, access_token=access_token, progress=progress,
+                            building_hints=building_hints)
     _report_progress(progress, 'Scene received and validated. Writing Data Pack ZIP...')
     dest = Path(out)
     return compile_datapack(scene, dest, offset=offset)
@@ -636,6 +739,7 @@ def main():
     parser.add_argument("--frames", type=int, default=DEFAULT_FRAMES,
                         help=f"Sample 2..{MAX_FRAMES} frames (default: {DEFAULT_FRAMES})")
     parser.add_argument("--offset", nargs=3, type=int, default=(5,0,5), metavar=("X","Y","Z"))
+    parser.add_argument('--building-hints', default='', help='Optional explicit building instructions; kept separate from video evidence')
     args = parser.parse_args()
     try:
         access_token = None
@@ -648,7 +752,7 @@ def main():
                 model = auth.models()[0][1]
         summary = run(video=args.video, scene_path=args.scene, out=args.out, model=model,
                       frames=args.frames, auth_mode=args.auth, access_token=access_token,
-                      offset=tuple(args.offset))
+                      offset=tuple(args.offset), building_hints=args.building_hints)
         print(f"Created: {summary['zip']} ({summary['commands']} block commands)")
     except Exception as exc:
         print(f"ERROR: {exc}", file=sys.stderr)

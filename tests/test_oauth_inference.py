@@ -13,6 +13,12 @@ class FakeStream:
     def __enter__(self): return iter(self.events)
     def __exit__(self,*args): pass
 
+def model_payload(scene):
+    for op in scene['ops']:
+        op.update(action='place', confidence='confirmed', replace=False,
+                  evidence={'frames':[1], 'observation':'Visible test construction', 'hint':None})
+    return json.dumps(scene)
+
 class InferTests(unittest.TestCase):
     def test_sdk_server_error_before_output_retries_once(self):
         from openai import APIError
@@ -101,7 +107,7 @@ class InferTests(unittest.TestCase):
 
     def test_streamed_json_inference_uses_siwc_compliant_fields(self):
         scene={'name':'one','size':[2,2,2],'ops':[{'block':'minecraft:stone','from':[0,0,0],'to':[1,0,1]}]}
-        data=json.dumps(scene)
+        data=model_payload(scene)
         events=[NS(type='response.output_text.delta',delta=data[:25]),
                 NS(type='response.output_text.delta',delta=data[25:]),
                 NS(type='response.completed', response=NS(output=[]))]
@@ -131,7 +137,7 @@ class InferTests(unittest.TestCase):
         import zipfile
         scene={'name':'tiny','size':[2,2,2],
                'ops':[{'block':'minecraft:stone','from':[0,0,0],'to':[1,0,1]}]}
-        payload=json.dumps(scene)
+        payload=model_payload(scene)
         class DummyOpenAI:
             def __init__(self, **params): self.responses=self
             def create(self, **params):

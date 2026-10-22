@@ -40,13 +40,19 @@ with ChatGPT** or an optional OpenAI API key.
 
 3. Double-click **START_WINDOWS.bat**. It creates a project-local `.venv`, installs
    dependencies there, and opens the app. Administrator access is not needed.
-4. Keep **Use ChatGPT plan** selected. Click **Continue with ChatGPT**, choose your
+4. Keep **Use ChatGPT plan** selected. Click **Sign in with ChatGPT**, choose your
    account in the browser, and approve the requested permissions.
-5. Click **Refresh models** when using a saved session. Select an image-capable
+5. The authorization is saved locally: the access/refresh credentials stay in the
+   Windows credential vault and account metadata stays in your user profile. After
+   the first authorization, select any previously saved account from **Saved
+   accounts** to switch without opening the browser again. Use **Add account** only
+   when adding a new account, then select it from the saved-account
+   list later.
+6. Click **Refresh current account models** when using a saved session. Select an image-capable
    model listed for your account.
-6. Select a video with **Browse**, choose an output ZIP with **Save as**, and set
+7. Select a video with **Browse**, choose an output ZIP with **Save as**, and set
    **Sample frames**. Start with 500; reduce the count if requests fail.
-7. Click **Generate Minecraft Data Pack ZIP** and wait for the success window.
+8. Click **Generate Minecraft Data Pack ZIP** and wait for the success window.
 
 Use a different ZIP filename for each video to keep previous results. Commands in
 both the main and success windows support text selection and **Copy** buttons.
@@ -152,6 +158,72 @@ produce fewer retained frames, reported in the console.
 
 ## Limits and troubleshooting
 
+### Special blocks and Building Hints
+
+The palette includes Air, Light, Barrier, Structure Void, Glass, Glass Pane,
+Water, and all 16 colors of stained glass/panes. State validation is block-specific:
+Light accepts `level=0..15` and `waterlogged`; Water accepts `level=0..15`;
+panes accept cardinal connection booleans and `waterlogged`. Invalid properties
+such as `glass[waterlogged=true]` or `stone[level=8]` are rejected, not dropped.
+
+Video inference considers placement changes, held items/hotbar icons, text,
+edges/thickness, multiple views, water motion/immersion and visible collisions.
+Brightness or transparency alone is insufficient evidence for invisible blocks.
+Each inferred operation records `action`, `confidence`, `evidence` and `replace`:
+
+- `place`: a confirmed block placement, including a real `structure_void` block.
+- `clear`: deliberate `minecraft:air` placement; unknown space is not air.
+- `preserve`: leave the world unchanged, not a Structure Void placement.
+- `unknown` or `confidence=uncertain`: leave the region untouched.
+
+The model schema separates placement/clear operations from nullable unknown/
+preserve operations. If an older or non-conforming result still requests placement
+with `block=null`, that region is downgraded to unknown and excluded from all
+placements and undo. It is never substituted with Air. The success window reports
+the count of unknown/preserved regions left untouched. Missing block fields and
+non-string/non-null values are rejected with the operation index.
+
+Preserved/uncertain regions are excluded from all broad overlapping fills and undo
+commands. A conflicting later overwrite of a special block requires `replace=true`.
+The compiler resolves final occupancy before sorting construction phases, so a
+later fluid pass cannot accidentally overwrite a Light or pane in the same cell.
+Different state strings are never merged into one uniform fill. Existing explicit
+offline block operations remain supported as manually specified placements/clears.
+
+Optional building hints can be passed with `--building-hints "Place a level-8 Light
+at the indicated location"` in the CLI. Hints stay separate from video evidence. Inferred frame references must
+refer to supplied frame IDs; hint quotations must match supplied hints. This checks
+provenance consistency, not whether a model's interpretation is actually correct.
+
+Placement uses the target version's `strict` command mode to avoid intermediate
+neighbor/shape updates. Missing pane connections are computed from the final
+planned geometry; explicit connection states are retained. Existing neighbors
+outside the plan cannot be inferred statically. Walls/floors are built before
+water and waterlogged hosts. Known open water boundaries are rejected. Boundaries
+that rely on the existing world get a runtime check for loaded chunks and a
+conservative tag of full solid seals before any placement or undo record is
+created. If that check fails, build stops without changing blocks. Unlisted but
+potentially watertight existing blocks can conservatively fail this check.
+
+Undo removes water/waterlogged hosts before container walls and uses strict,
+block-type-filtered removal at the saved origin/dimension. It excludes preserved
+regions and clears the history after a loaded-chunk undo. It does not restore
+terrain. Strict placement does not disable later game updates: modifying a
+container can still cause normal fluid flow and pane/state updates.
+
+Offline special-block example (no model request):
+
+```powershell
+.\.venv\Scripts\python.exe video2pack.py --scene examples/special_blocks.json --out outputs\special_blocks.zip
+```
+
+Air, Light, Barrier and Structure Void cannot be reliably distinguished from final
+appearance alone. The new rules reduce unsupported guesses; they do not provide
+block-perfect recognition. Minecraft-client lighting, collision and subsequent
+fluid ticks still require in-game acceptance testing.
+
+### General limits
+
 - Scenes are limited to **64 x 48 x 64**, with at most **500 operations**. The model
   prompt currently favors approximately 20-250 operations where useful.
 - Blocks come from a conservative vanilla palette. Hidden geometry, shader
@@ -202,10 +274,12 @@ or diagnostic files.
 .\.venv\Scripts\python.exe -m pip check
 ```
 
-The **20 automated tests** cover mocked OAuth registration/refresh, large credential
+The **43 automated tests** cover mocked OAuth registration/refresh, large credential
 records, failed-write recovery, streamed inference and bounded retries, single-ZIP
 output, compiler structure, tracked undo, real MP4 decoding and local frame
-selection. Tests make no model requests and need no account or API key.
+selection, special-block semantics/states, preserve masks, intentional overrides,
+pane connections and water preflight. Tests make no model requests and need no
+account or API key.
 
 Additional local checks exercised Windows credential persistence, GUI copying and
 real-account inference. They do not replace in-game acceptance testing.
@@ -214,9 +288,11 @@ real-account inference. They do not replace in-game acceptance testing.
 app.py                        Desktop interface
 chatgpt_auth.py                OAuth and OS credential storage
 video2pack.py                  Sampling, inference, validation and ZIP compiler
+block_rules.py                 Block semantics, state rules and final-occupancy planning
 START_WINDOWS.bat             Windows environment setup and launcher
 requirements.txt              Python dependencies
 examples/demo_house.json      Offline demo scene
+examples/special_blocks.json  Special blocks and sealed-water example
 tests/                        Automated tests
 ```
 
@@ -230,3 +306,4 @@ virtual environment.
 - [ChatGPT models and inference](https://developers.openai.com/siwc/token-sharing-open-source/models-and-inference)
 - [OpenAI image input requirements](https://developers.openai.com/api/docs/guides/images-vision)
 - [OpenAI API errors](https://developers.openai.com/api/docs/guides/error-codes)
+- [Java strict placement command semantics](https://www.minecraft.net/en-us/article/minecraft-java-edition-1-21-5)
