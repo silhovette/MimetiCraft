@@ -15,6 +15,7 @@ with ChatGPT** with saved account sessions, or an optional OpenAI API key.
 
 - Windows desktop interface built with Tkinter.
 - Optimized ChatGPT account-session persistence, account switching and model discovery using OS credential storage.
+- Added deletion for saved GPT account registrations and fixed several known issues.
 - Streamlined desktop controls with saved-account selection and fewer status-only UI elements.
 - Improved recognition and validated placement for glass, stained glass, water, Light blocks and Barriers.
 - Optional API-key mode; no automatic fallback to separately billed API usage.
