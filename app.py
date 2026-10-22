@@ -56,7 +56,9 @@ class App(tk.Tk):
         self.account_box.grid(row=0, column=1, columnspan=2, sticky='ew', padx=8)
         self.account_box.bind('<<ComboboxSelected>>', lambda _event: self.switch_account())
         self.account_box.bind('<Button-1>', self._schedule_account_menu_binding, add='+')
+        self.account_box.bind('<ButtonRelease-1>', self._schedule_account_menu_binding, add='+')
         self.account_box.bind('<Button-3>', self._account_context_menu)
+        self.bind_all('<Button-3>', self._account_global_context_menu, add='+')
         self.login_btn = ttk.Button(self.login_frame, text='Sign in with ChatGPT', command=self.sign_in)
         self.login_btn.grid(row=1, column=0, sticky='w', pady=7)
         self.models_btn = ttk.Button(self.login_frame, text='Refresh current account models', command=self.refresh_models)
@@ -116,7 +118,7 @@ class App(tk.Tk):
 
     def _schedule_account_menu_binding(self, _event=None):
         """Attach the context menu to the native list shown by ttk.Combobox."""
-        self.after(20, self._bind_account_popdown)
+        self.after(80, self._bind_account_popdown)
 
     def _bind_account_popdown(self):
         try:
@@ -130,6 +132,17 @@ class App(tk.Tk):
             self.after(50, self._bind_account_popdown)
             return
         listbox.bind('<Button-3>', self._account_list_context_menu, add='+')
+
+    def _account_global_context_menu(self, event):
+        """Fallback for Tk builds that do not preserve a widget binding on popdown."""
+        try:
+            popdown = self.tk.call('ttk::combobox::PopdownWindow', str(self.account_box))
+        except (tk.TclError, KeyError):
+            return
+        listbox = self._find_listbox(popdown)
+        if listbox is not None and event.widget == listbox:
+            self._account_list_context_menu(event)
+            return 'break'
 
     def _find_listbox(self, widget_path):
         """Find the Listbox used by a themed Combobox popdown."""
@@ -164,6 +177,7 @@ class App(tk.Tk):
         client_id = self.account_ids.get(values[index])
         if client_id:
             self._show_account_menu(event.x_root, event.y_root, client_id)
+            return 'break'
 
     def _show_account_menu(self, x, y, client_id):
         menu = tk.Menu(self, tearoff=False)
