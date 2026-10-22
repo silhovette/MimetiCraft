@@ -72,6 +72,20 @@ class AuthTests(unittest.TestCase):
         self.assertEqual(vals['agent_name_hint'][0], 'MimetiCraft')
         self.assertIn('chatgpt.tokens.use.direct', vals['scope'][0])
 
+    def test_delete_saved_account_removes_metadata_and_selects_remaining(self):
+        with tempfile.TemporaryDirectory() as root:
+            auth = ChatGPTAuth(Path(root))
+            auth.config['accounts'] = [
+                {'client_id': 'one', 'subject': 's1', 'email': 'one@example.com'},
+                {'client_id': 'two', 'subject': 's2', 'email': 'two@example.com'},
+            ]
+            auth.config['active'] = 'one'
+            auth._save()
+            with patch.object(auth, '_vault', return_value=Vault()):
+                self.assertEqual(auth.delete_account('one'), 'one@example.com')
+            self.assertEqual([a.client_id for a in auth.accounts()], ['two'])
+            self.assertEqual(auth.selected().client_id, 'two')
+
     def test_browser_registration_and_refresh(self):
         with tempfile.TemporaryDirectory() as root:
             auth=ChatGPTAuth(Path(root))

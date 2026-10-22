@@ -55,6 +55,8 @@ class App(tk.Tk):
                                         state='readonly', width=42)
         self.account_box.grid(row=0, column=1, columnspan=2, sticky='ew', padx=8)
         self.account_box.bind('<<ComboboxSelected>>', lambda _event: self.switch_account())
+        self.account_box.bind('<Button-1>', self._schedule_account_menu_binding, add='+')
+        self.account_box.bind('<Button-3>', self._account_context_menu)
         self.login_btn = ttk.Button(self.login_frame, text='Sign in with ChatGPT', command=self.sign_in)
         self.login_btn.grid(row=1, column=0, sticky='w', pady=7)
         self.models_btn = ttk.Button(self.login_frame, text='Refresh current account models', command=self.refresh_models)
@@ -111,6 +113,64 @@ class App(tk.Tk):
         self.account_choice.set(selected_label)
         self.login_btn.configure(text=('Reauthorize current account' if selected
                                        else 'Sign in with ChatGPT'))
+
+    def _schedule_account_menu_binding(self, _event=None):
+        """Attach the context menu to the native list shown by ttk.Combobox."""
+        self.after_idle(self._bind_account_popdown)
+
+    def _bind_account_popdown(self):
+        try:
+            popdown = self.tk.call('ttk::combobox::PopdownWindow', str(self.account_box))
+            listbox = self.nametowidget(popdown + '.f.l')
+        except (tk.TclError, KeyError):
+            return
+        listbox.bind('<Button-3>', self._account_list_context_menu, add='+')
+
+    def _account_context_menu(self, event):
+        client_id = self.account_ids.get(self.account_choice.get())
+        if client_id:
+            self._show_account_menu(event.x_root, event.y_root, client_id)
+
+    def _account_list_context_menu(self, event):
+        listbox = event.widget
+        index = listbox.nearest(event.y)
+        values = list(self.account_box['values'])
+        if not 0 <= index < len(values):
+            return
+        self.account_box.current(index)
+        client_id = self.account_ids.get(values[index])
+        if client_id:
+            self._show_account_menu(event.x_root, event.y_root, client_id)
+
+    def _show_account_menu(self, x, y, client_id):
+        menu = tk.Menu(self, tearoff=False)
+        menu.add_command(label='Delete account', command=lambda: self.delete_account(client_id))
+        try:
+            menu.tk_popup(x, y)
+        finally:
+            menu.grab_release()
+
+    def delete_account(self, client_id):
+        account = next((a for a in self.auth.accounts() if a.client_id == client_id), None)
+        if not account:
+            return
+        if not messagebox.askyesno('Delete saved account',
+                                   f'Delete the saved account {account.email}?\n\n'
+                                   'This removes its local login record and credential.',
+                                   parent=self):
+            return
+        try:
+            self.auth.delete_account(client_id)
+        except Exception as exc:
+            self._error(str(exc))
+            return
+        self.model_mapping = {}
+        self.model_box['values'] = ()
+        self.model.set('')
+        selected = self.auth.selected()
+        self.account.set(selected.email if selected else 'None — sign in below')
+        self._refresh_account_choices()
+        self.status.set('Saved account deleted.')
 
     def switch_account(self):
         """Activate a saved account and load its models without opening a browser."""

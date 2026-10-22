@@ -109,6 +109,20 @@ class ChatGPTAuth:
         self.config['active'] = client_id
         self._save()
 
+    def delete_account(self, client_id: str) -> str:
+        """Remove one saved registration and its local credential record."""
+        account = next((a for a in self.accounts() if a.client_id == client_id), None)
+        if not account:
+            raise ValueError('Unknown ChatGPT registration')
+        self._delete_tokens(client_id)
+        self.config['accounts'] = [x for x in self.config['accounts']
+                                   if x.get('client_id') != client_id]
+        if self.config.get('active') == client_id:
+            self.config['active'] = (self.config['accounts'][0]['client_id']
+                                     if self.config['accounts'] else None)
+        self._save()
+        return account.email
+
     @staticmethod
     def _vault():
         return _deps()[2]
