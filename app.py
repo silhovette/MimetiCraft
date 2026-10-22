@@ -116,15 +116,38 @@ class App(tk.Tk):
 
     def _schedule_account_menu_binding(self, _event=None):
         """Attach the context menu to the native list shown by ttk.Combobox."""
-        self.after_idle(self._bind_account_popdown)
+        self.after(20, self._bind_account_popdown)
 
     def _bind_account_popdown(self):
         try:
             popdown = self.tk.call('ttk::combobox::PopdownWindow', str(self.account_box))
-            listbox = self.nametowidget(popdown + '.f.l')
         except (tk.TclError, KeyError):
             return
+        listbox = self._find_listbox(popdown)
+        if listbox is None:
+            # The native popdown can finish mapping a few milliseconds after
+            # the mouse event; retry once while it is open.
+            self.after(50, self._bind_account_popdown)
+            return
         listbox.bind('<Button-3>', self._account_list_context_menu, add='+')
+
+    def _find_listbox(self, widget_path):
+        """Find the Listbox used by a themed Combobox popdown."""
+        try:
+            widget = self.nametowidget(widget_path)
+        except (tk.TclError, KeyError):
+            return None
+        try:
+            if self.tk.call('winfo', 'class', widget_path) == 'Listbox':
+                return widget
+            children = self.tk.call('winfo', 'children', widget_path)
+        except tk.TclError:
+            return None
+        for child in children:
+            found = self._find_listbox(child)
+            if found is not None:
+                return found
+        return None
 
     def _account_context_menu(self, event):
         client_id = self.account_ids.get(self.account_choice.get())
