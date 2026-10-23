@@ -1,10 +1,10 @@
 @echo off
 setlocal EnableExtensions EnableDelayedExpansion
 cd /d "%~dp0"
-title MimetiCraft v0.3.1 - Windows Launcher
+title Visual2Craft v0.3.1 - Windows Launcher
 
 echo ==============================================
-echo   MimetiCraft v0.3.1 - ChatGPT login
+echo   Visual2Craft v0.3.1 - ChatGPT login
 echo ==============================================
 echo.
 echo [INFO] Using a project-local Python environment.

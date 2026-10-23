@@ -69,7 +69,7 @@ class AuthTests(unittest.TestCase):
         vals=parse_qs(urlparse(url).query)
         self.assertEqual(vals['scope'][0], SCOPES)
         self.assertEqual(vals['code_challenge'][0], pkce_challenge('verifier'))
-        self.assertEqual(vals['agent_name_hint'][0], 'MimetiCraft')
+        self.assertEqual(vals['agent_name_hint'][0], 'Visual2Craft')
         self.assertIn('chatgpt.tokens.use.direct', vals['scope'][0])
 
     def test_delete_saved_account_removes_metadata_and_selects_remaining(self):
@@ -124,6 +124,54 @@ class AuthTests(unittest.TestCase):
                                        'expires_in':3600,'scope':SCOPES}
                 self.assertEqual(auth.access_token(),'new-access')
                 self.assertEqual(json.loads(vault.get_password(SERVICE,'oaiapp_test123'))['refresh_token'],'new-refresh')
+
+    def test_signin_can_be_canceled_without_browser_callback(self):
+        with tempfile.TemporaryDirectory() as root:
+            auth = ChatGPTAuth(Path(root))
+            cancel = threading.Event()
+            opened = []
+            def browser(url):
+                opened.append(url)
+                cancel.set()
+                return True
+            with patch('chatgpt_auth.webbrowser.open', side_effect=browser), \
+                 patch.object(auth, '_exchange') as exchange:
+                with self.assertRaisesRegex(RuntimeError, 'canceled'):
+                    auth.sign_in(add_account=True, timeout=4, cancel_event=cancel)
+            exchange.assert_not_called()
+            self.assertEqual(auth.accounts(), [])
+            # The abandoned OAuth listener releases its port.
+            target = parse_qs(urlparse(opened[0]).query)['redirect_uri'][0]
+            with self.assertRaises(OSError):
+                urlopen(target, timeout=1)
+
+    def test_cancel_during_token_exchange_does_not_save_or_switch_account(self):
+        with tempfile.TemporaryDirectory() as root:
+            auth = ChatGPTAuth(Path(root))
+            auth.config['accounts'] = [{'client_id':'old', 'subject':'old-sub', 'email':'old@example.test'}]
+            auth.select('old')
+            cancel = threading.Event()
+            def browser(url):
+                params = parse_qs(urlparse(url).query)
+                target = params['redirect_uri'][0] + '?' + urlencode({
+                    'code':'fake', 'state':params['state'][0], 'client_id':'new'})
+                def send():
+                    with urlopen(target, timeout=3):
+                        pass
+                threading.Thread(target=send, daemon=True).start()
+                return True
+            def exchange(_form):
+                cancel.set()
+                return {'id_token':'fake', 'refresh_token':'fake', 'scope':SCOPES}
+            with patch('chatgpt_auth.webbrowser.open', side_effect=browser), \
+                 patch.object(auth, '_exchange', side_effect=exchange), \
+                 patch.object(auth, '_validate_id_token', return_value={'sub':'new-sub'}), \
+                 patch.object(auth, '_save_tokens') as save:
+                with self.assertRaisesRegex(RuntimeError, 'canceled'):
+                    auth.sign_in(add_account=True, timeout=4, cancel_event=cancel)
+            save.assert_not_called()
+            self.assertEqual(auth.selected().client_id, 'old')
+            self.assertEqual([a.client_id for a in auth.accounts()], ['old'])
 
 if __name__=='__main__':
     unittest.main()

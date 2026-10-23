@@ -1,8 +1,8 @@
-# MimetiCraft
+# Visual2Craft
 
 **Turn Minecraft building videos into approximate Minecraft Java Data Packs.**
 
-MimetiCraft samples a construction video, filters redundant frames locally, asks a
+Visual2Craft samples a construction video, filters redundant frames locally, asks a
 vision model to describe the building as a voxel scene, and compiles it into a
 single ZIP. No task-specific training or local GPU is required. Use **Sign in
 with ChatGPT** with saved account sessions, or an optional OpenAI API key.
@@ -13,10 +13,18 @@ with ChatGPT** with saved account sessions, or an optional OpenAI API key.
 
 ## Features
 
-- Windows desktop interface built with Tkinter.
+- Windows desktop interface built with Tkinter. All settings, editable controls, progress, error details and results now live within one main window; only the operating-system file chooser and necessary ChatGPT OAuth browser open separately.
+- Full-window Minecraft scenery with animated purple Nether particles rising at both lower corners. Settings keeps wheel and keyboard scrolling on shorter windows without a visible scrollbar; the Generate button stays visible.
+- Rounded cards, input wells and buttons use translucent, lightly blurred acrylic material sampled from the continuous background. Native editors retain keyboard support and match the local frosted color. The command area uses a compact two-column layout.
+- The reference-inspired layout, dashed video-selection border, lavender gradients and iconography are implemented in code. Camera, gear, upload, folder, account, trash, terminal, copy and sparkle symbols are original vector drawings; the reference screenshot is never loaded as a runtime resource. Scenery uses the existing standalone project artwork.
+- The expanded video area plays selected files locally in a silent loop with center-cover cropping and a rounded mask matching the preview well. Compact Play/Pause, Change and Clear controls float over the lower edge; clearing the input preserves other form settings. Decoding and video cropping run off Tk's UI thread.
+- A dark native Windows title bar with white caption text is enabled where supported.
+- Building hints use a single-line input. Routine status text is hidden; task progress, cancellation and input errors appear inside Settings when needed.
 - Optimized ChatGPT account-session persistence, account switching and model discovery using OS credential storage.
 - Added deletion for saved GPT account registrations and fixed several known issues.
 - Streamlined desktop controls with saved-account selection and fewer status-only UI elements.
+- Explicit in-window account-removal and ZIP-replacement confirmations.
+- A smooth, truthful indeterminate activity track with elapsed time (no invented completion percentage); generation runs in a cancellable worker and saves the completed ZIP atomically.
 - Improved recognition and validated placement for glass, stained glass, water, Light blocks and Barriers.
 - Optional API-key mode; no automatic fallback to separately billed API usage.
 - **500 target frames by default**, adjustable from **2 to 1200**.
@@ -25,9 +33,53 @@ with ChatGPT** with saved account sessions, or an optional OpenAI API key.
 - First/last decoded frames and chronological order are preserved. Short videos
   use available readable samples instead of duplicating frames.
 - One artifact per run: **the Data Pack ZIP**. Intermediate scene data stays in memory.
-- Copyable Minecraft commands, output paths and model-error diagnostics.
+- Copyable Minecraft commands, output paths and model-error diagnostics, with temporary inline checkmarks and a floating dismissing confirmation toast.
 - At most one automatic retry for transient errors before any model output arrives.
 - Offline compilation and an included demo scene for testing without AI access.
+
+### Glass UI performance and resize behavior
+
+- Moving the desktop window no longer restyles or relayouts its contents.
+- Resize events are coalesced to the latest geometry once per UI frame. Active
+  provider panels stay mapped during resizing, so their native controls are not
+  repeatedly hidden and recreated. Particles and progress continue animating.
+- A single coalescing raster worker performs scenery resizing and large-panel
+  glass composition without touching Tk. Obsolete resize results are discarded;
+  the UI applies dependent layers in order with a 3 ms work budget per batch
+  (8 ms for the first paint so the initial screen fills sooner).
+  The previous complete image remains visible while its replacement is prepared.
+- Rounded masks, icons and gradients use a byte-bounded 24 MiB cache. Font metrics,
+  unchanged text layouts, frosted button backdrops and identical widget rasters
+  are reused. Identical panel/body backgrounds share their Tk photo. Colors,
+  filters, antialiasing, geometry and drawing formulas are preserved.
+- Frosted material uses a downsampled blur for large panels and subdued,
+  translucent borders rather than full-strength outlines. The large video
+  well now has its own acrylic frosting even before a video is selected.
+- Video decoding briefly suspends while resizing, then resumes automatically.
+  The idle preview timer slows down when no video is loaded; the corner mask and
+  scene underlay are reused rather than regenerated every frame.
+- Button hover colors ease smoothly, and copy confirmations softly fade. Activity
+  track movement changes only Canvas coordinates, avoiding per-frame PIL blur.
+- Progress, particles, hover transitions, copy fades and video presentation share
+  a **90 Hz frame clock**. A sleeping timing thread posts events through Tk's
+  supported event queue; widgets are updated exclusively on the UI thread.
+  Deadlines include rendering time, so callback cost does not slow playback.
+- The preview preserves native video speed up to 90 fps, with four frames of
+  bounded decoder lookahead. Higher-rate sources are sampled on their media
+  timeline. A 24/30 fps source remains 24/30 fps; no artificial frames are added.
+  Cropping, resizing and corner compositing run in the decoder thread. Video
+  stays on the existing Tk Canvas using two retained photos: the offscreen photo
+  is filled before it becomes visible. The old front image remains available
+  throughout resizing. No native video child window or per-frame clearing is used.
+  Loading, switching, pausing and hiding reset the media clock; opening/decoding
+  delays do not cause a fast-forward burst when the first frame arrives.
+- Particles reuse Canvas objects, and the playback control bar keeps a stable
+  frosted material instead of periodically repainting six controls during playback.
+  Hidden/minimized previews suspend their media clock and resume from the same
+  playback position. Animation wakeups slow down while hidden.
+- Updating ordinary status strings no longer forces a full-screen glass redraw;
+  only changes to feedback panel visibility or size request a backdrop repaint.
+  Core playback, output generation, account operations and Data Pack semantics remain unchanged.
 
 ## Quick start on Windows
 
@@ -37,28 +89,41 @@ with ChatGPT** with saved account sessions, or an optional OpenAI API key.
 2. Clone this repository or download and extract its source ZIP:
 
    ```powershell
-   git clone https://github.com/silhovette/MimetiCraft.git
-   cd MimetiCraft
+   git clone https://github.com/silhovette/Visual2Craft.git
+   cd Visual2Craft
    ```
 
 3. Double-click **START_WINDOWS.bat**. It creates a project-local `.venv`, installs
    dependencies there, and opens the app. Administrator access is not needed.
-4. Keep **Use ChatGPT plan** selected. Click **Sign in with ChatGPT**, choose your
-   account in the browser, and approve the requested permissions.
+4. In the **Settings** panel on the right, select **ChatGPT Plan**, then click **Sign in with ChatGPT**. Choose your account in the authorization browser and approve the requested permissions.
 5. The authorization is saved locally: the access/refresh credentials stay in the
    Windows credential vault and account metadata stays in your user profile. After
    the first authorization, select any previously saved account from **Saved
    accounts** to switch without opening the browser again. Use **Add account** only
    when adding a new account, then select it from the saved-account
    list later.
-6. Click **Refresh current account models** when using a saved session. Select an image-capable
+6. Click **Refresh models** when using a saved session, then select an image-capable
    model listed for your account.
-7. Select a video with **Browse**, choose an output ZIP with **Save as**, and set
+7. Select a video with **Browse files**, edit the Output ZIP path (or choose it with the browse button), and set
    **Sample frames**. Start with 500; reduce the count if requests fail.
-8. Click **Generate Minecraft Data Pack ZIP** and wait for the success window.
+8. Click **Generate Data Pack**. Progress appears inside Settings and the result appears directly inside the main video panel (no new app window).
 
-Use a different ZIP filename for each video to keep previous results. Commands in
-both the main and success windows support text selection and **Copy** buttons.
+Choosing a video suggests an unused ZIP filename based on that video's name,
+unless you have already customized the output path. If a destination exists,
+confirm its replacement in the main window before generation starts. A destination
+that changes during generation requires another confirmation before saving.
+Generation writes into a temporary directory beside the destination; only a
+successful, approved result replaces the destination. Cancellation or failure
+leaves the destination unchanged and removes temporary output.
+
+**Cancel generation** stops the local worker and closes its active connection.
+Usage already submitted to the model may still count toward your allowance or
+API bill. Account sign-in and model discovery show their own task labels and
+elapsed time; wait for those operations to finish before closing the app.
+
+Use **Remove selected** to review an account-removal confirmation containing the
+account's identity. **Cancel** or **Esc** dismisses it without deleting the account.
+Commands in the main panel remain one-click copyable before and after generation.
 
 ### Manual installation
 
@@ -252,7 +317,7 @@ fluid ticks still require in-game acceptance testing.
 
 Browser login uses OpenAI's documented dynamic-client OAuth flow with a loopback
 callback, PKCE, state, nonce, verified ID tokens and granted-scope checks. New
-registrations use the name **MimetiCraft**. Existing registrations remain usable.
+registrations use the name **Visual2Craft**. Existing registrations remain usable.
 
 Access, refresh and ID tokens are stored through the OS credential backend
 (`keyring`; Windows Credential Manager on Windows). Large records are split into
@@ -275,20 +340,49 @@ or diagnostic files.
 ```powershell
 .\.venv\Scripts\python.exe -m unittest discover -s tests -v
 .\.venv\Scripts\python.exe -m pip check
+.\.venv\Scripts\python.exe tests\benchmark_ui.py --output outputs\ui_fps.json --seconds 20 --fps 90
+.\.venv\Scripts\python.exe tests\benchmark_frontend.py --output outputs\frontend.json
 ```
 
-The **43 automated tests** cover mocked OAuth registration/refresh, large credential
+The automated tests cover mocked OAuth registration/refresh, large credential
 records, failed-write recovery, streamed inference and bounded retries, single-ZIP
 output, compiler structure, tracked undo, real MP4 decoding and local frame
 selection, special-block semantics/states, preserve masks, intentional overrides,
-pane connections and water preflight. Tests make no model requests and need no
-account or API key.
+pane connections and water preflight. GUI regression checks create real Tk windows
+and exercise account-removal confirmation, both form modes at multiple sizes,
+task feedback, cancellation, offline worker output and ZIP replacement protection.
+Run these checks in a desktop session with Tkinter available. Tests make no model
+requests and need no account or API key.
+
+The optional benchmark opens the real application with fake account storage and a
+generated motion video, runs the actual Tk mainloop, and reports per-channel fps,
+frame-interval percentiles and long gaps. Run it separately from the test suite.
+These are frame submissions, not monitor/vsync measurements or a guarantee that
+every frame on every machine takes exactly 11.11 ms. Source fps, display refresh,
+decoding capacity and OS scheduling still affect visible smoothness. Python 3.11+
+is recommended for Windows high-resolution sleep timing.
+
+The frontend benchmark additionally measures constructor/first-paint time,
+event-loop gaps during animated playback and repeated resizing, callback cost,
+and exact raster/geometry fingerprints in both account modes. Compare separate
+runs on the same desktop. Its optional --hold argument keeps the completed test
+window open for manual interaction; measurement finishes before that hold.
 
 Additional local checks exercised Windows credential persistence, GUI copying and
 real-account inference. They do not replace in-game acceptance testing.
 
 ```text
 app.py                        Desktop interface
+ui_widgets.py                 Rounded native-control presentation components
+ui_icons.py                   Original code-drawn vector icon library
+ui_motion.py                  Lightweight progress animation and copy feedback
+ui_timing.py                  Shared 90 Hz deadline scheduler and timer lifecycle
+ui_frame_driver.py            Sleeping frame driver using Tk event marshalling
+ui_rendering.py               Bounded exact-pixel raster and font-metric caches
+ui_worker.py                  Coalescing background raster worker and UI delivery
+ui_layout.py                  Responsive reference-proportioned layout
+video_preview.py              Threaded local video preview and playback controls
+video_surface.py              Retained double-buffered Tk video images
 chatgpt_auth.py                OAuth and OS credential storage
 video2pack.py                  Sampling, inference, validation and ZIP compiler
 block_rules.py                 Block semantics, state rules and final-occupancy planning

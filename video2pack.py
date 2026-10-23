@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""MimetiCraft MVP: construction video -> approximate voxel scene -> Minecraft Java 26.3 datapack ZIP.
+"""Visual2Craft MVP: construction video -> approximate voxel scene -> Minecraft Java 26.3 datapack ZIP.
 
 Use --video with ChatGPT Sign in (default) or an optional API key; --scene works offline.
 No custom training. Video inference quality is not guaranteed.
@@ -264,7 +264,7 @@ def compile_datapack(scene: dict[str, Any], output: Path, offset: tuple[int, int
     if len(forward) + len(boundaries) * 2 > MAX_COMMANDS:
         raise ValueError('Water boundary checks exceed the command budget; simplify the scene')
     output.parent.mkdir(parents=True, exist_ok=True)
-    pack = {"pack": {"description": f"MimetiCraft build/undo: {scene['name']}",
+    pack = {"pack": {"description": f"Visual2Craft build/undo: {scene['name']}",
                      "min_format": PACK_VERSION, "max_format": PACK_VERSION}}
     build_chunks = [forward[i:i + 400] for i in range(0, len(forward), 400)]
     undo_chunks = [reverse[i:i + 400] for i in range(0, len(reverse), 400)]
@@ -349,7 +349,7 @@ def compile_datapack(scene: dict[str, Any], output: Path, offset: tuple[int, int
         z.writestr(f"{base}/build.mcfunction", build)
         z.writestr(f"{base}/undo.mcfunction", undo)
         z.writestr(f"{base}/check.mcfunction",
-                   'tellraw @s {"text":"MimetiCraft 26.3 ready: /function vidbuild:build and /function vidbuild:undo","color":"green"}\n')
+                   'tellraw @s {"text":"Visual2Craft 26.3 ready: /function vidbuild:build and /function vidbuild:undo","color":"green"}\n')
         z.writestr(f"{base}/internal/start.mcfunction", start)
         z.writestr(f"{base}/internal/build_at_origin.mcfunction", build_at_origin)
         if boundaries:
@@ -442,7 +442,7 @@ def _select_frame_indices(signatures, sharpness, target: int) -> list[int]:
     return [index for index in range(total) if active[index]]
 
 
-def video_frames(path: Path, count: int):
+def video_frames(path: Path, count: int, progress: Callable[[Any], None] | None = None):
     if type(count) is not int or not 1 <= count <= MAX_FRAMES:
         raise ValueError(f"frame count must be 1..{MAX_FRAMES}")
     try:
@@ -508,10 +508,13 @@ class _ModelFailure(RuntimeError):
         self.code = code
 
 
-def _report_progress(progress, message: str):
+def _report_progress(progress, message: str, fraction: float | None = None):
     print(message, flush=True)
     if progress:
-        progress(message)
+        if fraction is None:
+            progress(message)
+        else:
+            progress({'message': message, 'fraction': max(0., min(1., float(fraction)))})
 
 
 def _request_scene_text(client, request: dict, model: str, frame_count: int,
@@ -552,7 +555,7 @@ def _request_scene_text(client, request: dict, model: str, frame_count: int,
                         output_started = True
                     if kind == 'response.output_text.delta':
                         if not deltas:
-                            _report_progress(progress, 'Receiving building scene from OpenAI...')
+                            _report_progress(progress, 'Receiving building scene from OpenAI...', 0.76)
                         deltas.append(event.delta)
                     elif kind in ('response.failed', 'error'):
                         error = getattr(getattr(event, 'response', None), 'error', None) or event
@@ -593,7 +596,7 @@ def _request_scene_text(client, request: dict, model: str, frame_count: int,
                     # Do not ignore an HTTP-date or unrecognized Retry-After.
                     delay = 31.0
             if retryable and not output_started and attempt == 0 and delay <= 30:
-                _report_progress(progress, f'OpenAI temporary error ({code}); retrying once in {delay:g}s with the same frames and model...')
+                _report_progress(progress, f'OpenAI temporary error ({code}); retrying once in {delay:g}s with the same frames and model...', 0.58)
                 time.sleep(delay)
                 continue
             # Only expose bounded diagnostic metadata, never bodies, headers,
@@ -633,8 +636,9 @@ def infer_scene(video: Path, model: str, frame_count: int, api_key: str | None =
         raise RuntimeError("ChatGPT sign-in is required. Sign in from the desktop app.")
     if auth_mode == "api" and not (api_key or os.getenv("OPENAI_API_KEY")):
         raise RuntimeError("API key mode requires OPENAI_API_KEY")
-    frames = video_frames(video, frame_count)
-    _report_progress(progress, f"Extracted {len(frames)} frames; invoking {model}...")
+    _report_progress(progress, 'Sampling and filtering video frames…', 0.02)
+    frames = video_frames(video, frame_count, progress=progress)
+    _report_progress(progress, f'Extracted {len(frames)} frames; invoking {model}...', 0.44)
     palette_text = ", ".join("minecraft:" + b for b in PALETTE if b != "air")
     prompt = f"""You are reconstructing a Minecraft building from ordered frames of its CONSTRUCTION VIDEO.
 Your job: output a single JSON scene specifying approximate Minecraft blocks and grid coordinates.
@@ -673,6 +677,7 @@ block, from, to as specified in the schema.
         client = OpenAI(api_key=access_token, base_url="https://api.openai.com/v1", max_retries=0)
         request.update(store=False, stream=True)
     try:
+        _report_progress(progress, f'Submitting {len(frames)} frames to {model}…', 0.52)
         output_text = _request_scene_text(client, request, model, len(frames), progress)
     finally:
         close = getattr(client, 'close', None)
@@ -700,7 +705,7 @@ block, from, to as specified in the schema.
         unresolved = sum(op.get('block') is None and op.get('action') in ('place', 'clear')
                          for op in raw_scene['ops'])
         if unresolved:
-            _report_progress(progress, f'Model returned {unresolved} unnamed block region(s); leaving those regions untouched, never replacing them with air.')
+            _report_progress(progress, f'Model returned {unresolved} unnamed block region(s); leaving those regions untouched, never replacing them with air.', 0.90)
         return scene
     except json.JSONDecodeError as exc:
         raise RuntimeError("Model returned malformed JSON; try a different model or fewer frames") from exc
@@ -723,9 +728,11 @@ def run(*, video: str | None = None, scene_path: str | None = None, out: str = "
         scene = infer_scene(Path(video), model or "gpt-5.5", frames, api_key,
                             auth_mode=auth_mode, access_token=access_token, progress=progress,
                             building_hints=building_hints)
-    _report_progress(progress, 'Scene received and validated. Writing Data Pack ZIP...')
+    _report_progress(progress, 'Scene received and validated. Writing Data Pack ZIP...', 0.94)
     dest = Path(out)
-    return compile_datapack(scene, dest, offset=offset)
+    summary = compile_datapack(scene, dest, offset=offset)
+    _report_progress(progress, 'Data Pack ZIP written successfully.', 1.0)
+    return summary
 
 
 def main():
