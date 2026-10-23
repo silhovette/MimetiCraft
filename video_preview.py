@@ -25,8 +25,12 @@ class PreviewDecoder:
         self.hidden = threading.Event()
         self.size = size
         self.fps = 25.0
+        self.frame_count = 0
+        self.duration = 0.0
         self.source_size = (0, 0)
         self.surface = surface  # Immutable (matte, mask) snapshot; never Tk objects.
+        self._seek_lock = threading.Lock()
+        self._seek_target = None
         self.thread = threading.Thread(target=self._run, daemon=True, name='video-preview')
         self.thread.start()
 
@@ -39,11 +43,26 @@ class PreviewDecoder:
                 raise RuntimeError('This video cannot be opened for preview.')
             fps = capture.get(cv2.CAP_PROP_FPS)
             self.fps = fps if math.isfinite(fps) and .1 <= fps <= 1000 else 25.0
+            frame_count = capture.get(cv2.CAP_PROP_FRAME_COUNT)
+            self.frame_count = round(frame_count) if math.isfinite(frame_count) and frame_count > 0 else 0
+            self.duration = self.frame_count/self.fps if self.frame_count else 0.0
             playback_fps = min(self.fps, UI_FPS)
             source_step = self.fps/playback_fps
             next_source, source_cursor = 0., -1
             serial, loops = 0, 0
             while not self.stopped.is_set():
+                with self._seek_lock:
+                    seek_target = self._seek_target
+                    self._seek_target = None
+                if seek_target is not None:
+                    target_frame = max(0, min(self.frame_count-1, round(seek_target*self.fps))) if self.frame_count else 0
+                    capture.set(cv2.CAP_PROP_POS_FRAMES, target_frame)
+                    next_source, source_cursor = float(target_frame), target_frame-1
+                    while True:
+                        try:
+                            self.frames.get_nowait()
+                        except queue.Empty:
+                            break
                 if serial and (self.paused.is_set() or self.hidden.is_set()):
                     self.stopped.wait(.03)
                     continue
@@ -109,12 +128,18 @@ class PreviewDecoder:
             pass
         self.thread.join(timeout=.5)
 
+    def seek(self, seconds):
+        """Request a source seek without touching OpenCV from Tk's thread."""
+        with self._seek_lock:
+            self._seek_target = max(0.0, float(seconds))
+
 
 class VideoPreview(tk.Canvas):
-    def __init__(self, master, *, on_error, on_frame=None):
+    def __init__(self, master, *, on_error, on_frame=None, on_progress=None):
         super().__init__(master, bg=CARD, bd=0, highlightthickness=0, takefocus=True)
         self.on_error = on_error
         self.on_frame = on_frame
+        self.on_progress = on_progress
         self.current_frame = None
         self.display_bounds = (0, 0, 1, 1)
         self.decoder = None
@@ -128,6 +153,8 @@ class VideoPreview(tk.Canvas):
         self._frame = self.create_image(0, 0, anchor='center')
         self._surface = VideoSurface(self, self._frame)
         self.frame_serial = self.frame_index = self.loop_count = 0
+        self.duration = 0.0
+        self.position = 0.0
         self._after = self.after(30, self._pump)
         self._background_after = None
         self._matte = None
@@ -148,6 +175,8 @@ class VideoPreview(tk.Canvas):
         self.frame_serial = self.frame_index = self.loop_count = 0
         self._prepare_surface()
         self.decoder = PreviewDecoder(path, size=self._mask_size, surface=(self._matte, self._round_mask))
+        self.duration = 0.0
+        self.position = 0.0
         if self._after is not None:
             self._timer.cancel(self._after)
         self._after = self.after(10, self._pump)
@@ -266,7 +295,11 @@ class VideoPreview(tk.Canvas):
                     self.current_frame = frame
                     self._present(frame)
                     self.frame_serial, self.frame_index, self.loop_count = serial, index, loops
+                    self.duration = decoder.duration
+                    self.position = index/decoder.fps if decoder.fps else 0.0
                     self._position_frame()
+                    if self.on_progress:
+                        self.on_progress(self.position, self.duration)
             try:
                 error = decoder.errors.get_nowait()
             except queue.Empty:
@@ -290,6 +323,15 @@ class VideoPreview(tk.Canvas):
             self.decoder.paused.set() if self.user_paused else self.decoder.paused.clear()
         self._wake()
         return self.user_paused
+
+    def seek(self, fraction):
+        if not self.decoder or self.duration <= 0:
+            return
+        fraction = max(0.0, min(1.0, float(fraction)))
+        self.position = fraction*self.duration
+        self.decoder.seek(self.position)
+        self._video_deadline = None
+        self._wake()
 
     def suspend(self):
         self._suspended = True
@@ -315,6 +357,8 @@ class VideoPreview(tk.Canvas):
             self.decoder.close()
         self.decoder = None
         self.path = None
+        self.duration = 0.0
+        self.position = 0.0
         self._surface.close()
         self.current_frame = None
         self._decoded_frame = None

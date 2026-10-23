@@ -67,7 +67,8 @@ def build_reference_ui(app, game_commands):
     a.browse_btn = a._button(a.video_prompt, 'Browse files', a.choose_video, primary=True)
     a.browse_btn.icon = 'folder'
     a.browse_btn.grid(row=3, column=0)
-    a.preview = VideoPreview(a.prompt_card.body, on_error=a._preview_failed, on_frame=a._layout_preview_controls)
+    a.preview = VideoPreview(a.prompt_card.body, on_error=a._preview_failed,
+                             on_frame=a._layout_preview_controls, on_progress=a._update_preview_progress)
     a.preview_bar = RoundedSurface(a.prompt_card.body, fill=FIELD, radius=10, padding=4, scale=scale)
     a.preview_bar.opacity = .7
     a.preview_bar.backdrop_provider = a._preview_controls_backdrop
@@ -80,6 +81,13 @@ def build_reference_ui(app, game_commands):
     a.change_video_btn.grid(row=0, column=2, padx=(0, a._u(5)))
     a.clear_video_btn = a._button(a.preview_bar.body, 'Clear', a.clear_video, compact=True, micro=True)
     a.clear_video_btn.grid(row=0, column=3)
+    a.preview_progress = tk.Scale(
+        a.preview_bar.body, from_=0.0, to=1.0, resolution=0.001, orient='horizontal',
+        showvalue=0, highlightthickness=0, bd=0, relief='flat', sliderrelief='flat',
+        bg=FIELD, troughcolor='#7771A5', activebackground=ACCENT, fg=WHITE,
+        cursor='hand2', command=a._seek_preview,
+    )
+    a.preview_progress.grid(row=1, column=0, columnspan=4, sticky='ew', pady=(a._u(2), 0))
     a.details = RoundedField(a.video_frame, 'text', font=a._font(), scale=scale, wrap='word', height=7, state='disabled')
     a.detail_actions = GlassFrame(a.video_frame, bg=CARD)
     a.detail_copy = a._button(a.detail_actions, 'Copy details', a._copy_details)

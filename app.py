@@ -201,6 +201,7 @@ class App(tk.Tk):
         self._deferred_glass_refresh = False
         self._particle_tick = 0
         self._preview_bar_bounds = None
+        self._preview_progress_updating = False
         rng = random.Random(153)
         self._particles = [dict(side=side, x=rng.uniform(.002, .11), y=rng.uniform(.70, 1.02),
                                 speed=rng.uniform(.00045, .0012), size=rng.uniform(1.1, 2.7),
@@ -995,6 +996,24 @@ class App(tk.Tk):
         paused = self.preview.toggle_pause()
         self.pause_preview_btn.configure(text='Play' if paused else 'Pause')
 
+    def _seek_preview(self, value):
+        if self._preview_progress_updating:
+            return
+        self.preview.seek(float(value))
+
+    def _update_preview_progress(self, position, duration):
+        if not hasattr(self, 'preview_progress'):
+            return
+        if duration <= 0:
+            self.preview_progress.configure(state='disabled')
+            return
+        self._preview_progress_updating = True
+        try:
+            self.preview_progress.configure(state='normal', to=1.0)
+            self.preview_progress.set(max(0.0, min(1.0, position/duration)))
+        finally:
+            self._preview_progress_updating = False
+
     def _preview_controls_backdrop(self):
         return self.preview.sample_region(self.preview_bar.winfo_x(), self.preview_bar.winfo_y(),
                                           max(1, self.preview_bar.winfo_width()), max(1, self.preview_bar.winfo_height()))
@@ -1003,7 +1022,7 @@ class App(tk.Tk):
         if self._content != 'video' or not self.preview.winfo_ismapped():
             return
         left, top, width, height = bounds
-        margin, bar_height = self._u(8), self._u(32)
+        margin, bar_height = self._u(8), self._u(52)
         bar_width = min(max(self._u(160), round(width)-2*margin), self.preview.winfo_width()-2*margin)
         bar_width = max(1, bar_width)
         x = max(margin, min(round(left+(width-bar_width)/2), self.preview.winfo_width()-bar_width-margin))
