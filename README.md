@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="assets/logo.png" alt="MimetiCraft logo">
+</p>
+
 # Visual2Craft
 
 **Turn Minecraft building videos into approximate Minecraft Java Data Packs.**
